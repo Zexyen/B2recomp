@@ -24,9 +24,17 @@
 #include <string.h>
 #include <windows.h>
 /* Session 2: the Khronos headers (reference\upstream\Vulkan-Headers\include, -I in build.py) replace our own vk_min.h subset. */
+#ifdef _WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
+#endif
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
+#ifdef _WIN32
+#define VKF_WIN32(X) X(VkResult, vkCreateWin32SurfaceKHR, (VkInstance, const VkWin32SurfaceCreateInfoKHR *, const VkAllocationCallbacks *, VkSurfaceKHR *))
+#else
+#include <SDL3/SDL_vulkan.h>                              /* Linux: the window is SDL's (display.c), and so is its surface */
+#define VKF_WIN32(X)
+#endif
 #include "nvn_front.h"
 #include "gfx_options.h"
 #define P(a) ((void *)(uintptr_t)(a))                     /* guest addresses are host addresses (as in nvn_gl.c) */
@@ -56,7 +64,7 @@ void display_before_present(void);
     X(void, vkGetPhysicalDeviceProperties, (VkPhysicalDevice, VkPhysicalDeviceProperties *)) \
     X(void, vkGetPhysicalDeviceQueueFamilyProperties, (VkPhysicalDevice, uint32_t *, VkQueueFamilyProperties *)) \
     X(VkResult, vkEnumerateDeviceExtensionProperties, (VkPhysicalDevice, const char *, uint32_t *, VkExtensionProperties *)) \
-    X(VkResult, vkCreateWin32SurfaceKHR, (VkInstance, const VkWin32SurfaceCreateInfoKHR *, const VkAllocationCallbacks *, VkSurfaceKHR *)) \
+    VKF_WIN32(X) \
     X(void, vkDestroySurfaceKHR, (VkInstance, VkSurfaceKHR, const VkAllocationCallbacks *)) \
     X(VkResult, vkGetPhysicalDeviceSurfaceSupportKHR, (VkPhysicalDevice, uint32_t, VkSurfaceKHR, VkBool32 *)) \
     X(VkResult, vkGetPhysicalDeviceSurfaceCapabilitiesKHR, (VkPhysicalDevice, VkSurfaceKHR, VkSurfaceCapabilitiesKHR *)) \
@@ -260,10 +268,22 @@ int nvn_vk_init(void *hwnd) {
     uint32_t niext = 128;
     r = vkEnumerateInstanceExtensionProperties(NULL, &niext, iext);
     if (r != VK_SUCCESS && r != VK_INCOMPLETE) vk_fatal("vkEnumerateInstanceExtensionProperties", r);
-    const char *exts[6], *layers[1];
+    const char *exts[10], *layers[1];
     uint32_t next = 0, nlayers = 0;
+#ifdef _WIN32
     exts[next++] = "VK_KHR_surface"; exts[next++] = "VK_KHR_win32_surface";
     if (!has_name(iext, niext, "VK_KHR_surface") || !has_name(iext, niext, "VK_KHR_win32_surface")) { printf("nvn_vk: the Vulkan loader has no VK_KHR_surface / VK_KHR_win32_surface\n"); fflush(stdout); ExitProcess(5); }
+#else
+    {   /* the surface extensions of SDL's video driver: VK_KHR_surface + VK_KHR_xlib_surface / VK_KHR_wayland_surface */
+        Uint32 n = 0;
+        const char *const *se = SDL_Vulkan_GetInstanceExtensions(&n);
+        for (Uint32 i = 0; se && i < n && next < 4; i++) {
+            if (!has_name(iext, niext, se[i])) { printf("nvn_vk: the Vulkan loader has no %s (SDL's %s video needs it)\n", se[i], SDL_GetCurrentVideoDriver()); fflush(stdout); ExitProcess(5); }
+            exts[next++] = se[i];
+        }
+        if (!next) { printf("nvn_vk: SDL names no Vulkan surface extension: %s\n", SDL_GetError()); fflush(stdout); ExitProcess(5); }
+    }
+#endif
     if (has_name(iext, niext, "VK_EXT_swapchain_colorspace")) exts[next++] = "VK_EXT_swapchain_colorspace";      /* [Recomps#1] finding 147: the HDR colour spaces */
     { const char *e = getenv("SSBU_VK_VALIDATE"); V.validate = e && atoi(e) != 0; }
     if (V.validate) {
@@ -297,11 +317,15 @@ int nvn_vk_init(void *hwnd) {
         printf("nvn_vk: validation layer on (VK_LAYER_KHRONOS_validation); messages are printed as vk-validation:\n");
     }
 
+#ifdef _WIN32
     VkWin32SurfaceCreateInfoKHR si;
     memset(&si, 0, sizeof si);
     si.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR; si.hinstance = GetModuleHandleA(NULL); si.hwnd = hwnd;
     r = vkCreateWin32SurfaceKHR(V.instance, &si, NULL, &V.surface);
     if (r != VK_SUCCESS) vk_fatal("vkCreateWin32SurfaceKHR", r);
+#else
+    if (!SDL_Vulkan_CreateSurface((SDL_Window *)hwnd, V.instance, NULL, &V.surface)) { printf("nvn_vk: SDL_Vulkan_CreateSurface: %s\n", SDL_GetError()); fflush(stdout); ExitProcess(5); }
+#endif
 
     /* device: discrete > integrated > virtual > other; needs one queue family with graphics + compute that can present to the window */
     VkPhysicalDevice gpus[16];

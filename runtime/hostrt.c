@@ -2,7 +2,7 @@
  * call dispatch, import dispatch with tracing, and crash reporting. */
 #include <stdio.h>
 #include <stdlib.h>
-#include <windows.h>
+#include "plat.h"
 #include "runtime.h"
 #include "hostrt.h"
 
@@ -497,6 +497,34 @@ void guest_unimpl(uint64_t pc, uint32_t insn, const char *what) {
 }
 void guest_svc(Ctx *c, uint32_t number) { (void)c; guest_trap("svc (direct kernel call)", number); }
 
+#ifndef _WIN32
+#include <execinfo.h>
+#include <signal.h>
+/* Linux: the same report from a signal handler, on a stack of its own (a guest stack overflow lands here too) */
+static void crash_signal(int sig, siginfo_t *si, void *uc) {
+    (void)uc;
+    printf("\nHOST SIGNAL %d (%s) at address 0x%llx\n", sig, strsignal(sig), (unsigned long long)(uintptr_t)si->si_addr);
+    dump_guest_registers();
+    printf("guest call stack (innermost first):\n");
+    void *pcs[400];
+    int n = backtrace(pcs, 400);
+    uint64_t last = 0;
+    for (int i = 0, shown = 0; i < n && shown < 40; i++) {
+        uint64_t g = guest_function_of((uint64_t)(uintptr_t)pcs[i]);
+        if (g && g != last) { printf("  f_%llx\n", (unsigned long long)g); shown++; last = g; }
+        if (!g && i < 16) printf("  host %p\n", pcs[i]);   /* addr2line -e game_native / game.so */
+    }
+    report_and_exit(4);
+}
+static void install_crash_handler(void) {
+    static uint8_t alt[1 << 16];
+    stack_t ss = { .ss_sp = alt, .ss_size = sizeof alt };
+    sigaltstack(&ss, NULL);
+    struct sigaction sa = { .sa_sigaction = crash_signal, .sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND };
+    sigemptyset(&sa.sa_mask);
+    for (int sig = 0, sigs[] = { SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT }; sig < 5; sig++) sigaction(sigs[sig], &sa, NULL);
+}
+#else
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
     printf("\nHOST EXCEPTION 0x%08lx at host address %p\n", er->ExceptionCode, er->ExceptionAddress);
@@ -523,6 +551,7 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
     report_and_exit(4);
     return EXCEPTION_EXECUTE_HANDLER;
 }
+#endif
 
 /* ---------------------------------------------------------------- loader */
 void runtime_init(const char *elf, const char *trace_path) {
@@ -542,13 +571,17 @@ void runtime_init(const char *elf, const char *trace_path) {
                (void *)g_by_host[0].fn, (void *)g_by_host[fn_table_count - 1].fn);
     }
     g_trace = fopen(trace_path, "w");
+#ifdef _WIN32
     SetUnhandledExceptionFilter(crash_filter);
+#else
+    install_crash_handler();
+#endif
 
-    void *mem = VirtualAlloc((void *)GUEST_BASE, IMAGE_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (mem != (void *)GUEST_BASE) { fprintf(stderr, "cannot map guest image at 0x%llx\n", GUEST_BASE); exit(1); }
+    void *mem = plat_map_fixed(GUEST_BASE, IMAGE_SIZE);
+    if (!mem) { fprintf(stderr, "cannot map guest image at 0x%llx\n", GUEST_BASE); exit(1); }
     /* data symbols provided by other modules: zero-filled placeholders, IMPORT_SLOT bytes each */
-    void *imp = VirtualAlloc((void *)IMPORT_BASE, (SIZE_T)dyn_sym_count * IMPORT_SLOT, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (imp != (void *)IMPORT_BASE) { fprintf(stderr, "cannot map import area\n"); exit(1); }
+    void *imp = plat_map_fixed(IMPORT_BASE, (size_t)dyn_sym_count * IMPORT_SLOT);
+    if (!imp) { fprintf(stderr, "cannot map import area\n"); exit(1); }
     FILE *f = fopen(elf, "rb");
     if (!f) { fprintf(stderr, "cannot open %s\n", elf); exit(1); }
     fseek(f, (long)FILE_OFF, SEEK_SET);
@@ -584,8 +617,7 @@ void runtime_init(const char *elf, const char *trace_path) {
      * relocations are applied (all of them land in the data segment: the image would not load on the console otherwise), so a
      * wild write into code or constants faults instead of corrupting silently. SSBU_NO_PROTECT=1 leaves the old mapping. */
     if (!getenv("SSBU_NO_PROTECT")) {
-        DWORD oldp;
-        if (!VirtualProtect((void *)GUEST_BASE, GUEST_RO_END, PAGE_READONLY, &oldp)) { fprintf(stderr, "cannot protect the image's text and read-only data\n"); exit(1); }
+        if (!plat_protect((void *)GUEST_BASE, GUEST_RO_END, PLAT_RO)) { fprintf(stderr, "cannot protect the image's text and read-only data\n"); exit(1); }
         printf("image protection: 0x%llx..0x%llx read-only (text, read-only data), data and bss read-write\n", GUEST_BASE, GUEST_BASE + GUEST_RO_END);
     }
 }

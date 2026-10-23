@@ -33,8 +33,9 @@ BUILD, OBJ, OBJH = os.path.join(ROOT, 'build'), toolchain.OBJ, os.path.join(tool
 CLANG = toolchain.CLANG
 MINGW = toolchain.MINGW
 # libraries: environment variable, else <repo>/deps/<name> (toolchain.locate; scripts/setup.py sets the variables)
-SDL3 = toolchain.need('SDL3_ROOT', 'SDL3', 'lib/x64/SDL3.lib', 'SDL3 3.4.18 (the VC development package)')
-VKH = toolchain.need('VULKAN_HEADERS', 'Vulkan-Headers', 'include/vulkan/vulkan.h', 'Khronos Vulkan-Headers (vulkan-sdk-1.4.341.0)')
+LINUX = toolchain.NAME == 'linux'                          # Linux port: the system's SDL3, Vulkan headers and libraries
+SDL3 = None if LINUX else toolchain.need('SDL3_ROOT', 'SDL3', 'lib/x64/SDL3.lib', 'SDL3 3.4.18 (the VC development package)')
+VKH = None if LINUX else toolchain.need('VULKAN_HEADERS', 'Vulkan-Headers', 'include/vulkan/vulkan.h', 'Khronos Vulkan-Headers (vulkan-sdk-1.4.341.0)')
 # ssbu_glslang.dll (step 4) needs MSVC + the glslang release, or a ready-made one: GLSLANG_DLL=<file> or deps/ssbu_glslang.dll
 GLSLANG = toolchain.locate('GLSLANG_ROOT', 'glslang', 'lib/glslang.lib')
 GLSLANG_DLL = next((f for f in (os.environ.get('GLSLANG_DLL'), os.path.join(toolchain.DEPS, 'ssbu_glslang.dll'))
@@ -52,8 +53,17 @@ HOST_SOURCES = ['hostrt.c', 'boot.c', 'nnsdk.c', 'libcxx.c', 'os_threads.c', 'nv
 HOST_FLAGS = ['-O1', '-g', '-gcodeview', '-w', '-fno-strict-aliasing', '-mcx16', '-I', RT, '-I', GENRT,   # debug info: crash addresses -> source (llvm-symbolizer)
               '-Dfn_table=(*game_fn_table_p)', '-Dfn_table_count=(*game_fn_table_count_p)',
               '-Ddyn_syms=(*game_dyn_syms_p)', '-Ddyn_sym_count=(*game_dyn_sym_count_p)',
-              '-I', os.path.join(SDL3, 'include'), '-I', os.path.join(VKH, 'include')]
+              ] + ([] if LINUX else ['-I', os.path.join(SDL3, 'include'), '-I', os.path.join(VKH, 'include')])
 LIBS = ['-luser32', '-lgdi32', '-lwinmm', '-lmfplat', '-lmfreadwrite', '-lmfuuid', '-lole32', '-lshlwapi']
+if LINUX:
+    # runtime/posix/ comes first on the include path: its windows.h is plat.h (the Win32 subset, plat_posix.c) plus
+    # win32_absent.h (what Linux does not have, failing cleanly); the same warning guard as mingw (below)
+    HOST_SOURCES = HOST_SOURCES + ['plat_posix.c', 'plat_audio_sdl.c']
+    HOST_FLAGS.remove('-gcodeview')
+    HOST_FLAGS[HOST_FLAGS.index('-w')] = '-Wno-everything'
+    HOST_FLAGS = ['-I', os.path.join(RT, 'posix')] + HOST_FLAGS + ['-D_GNU_SOURCE', '-fPIC', '-D__declspec(x)=', '-D__stdcall=', '-D__cdecl=',
+                  '-Werror=implicit-function-declaration', '-Werror=incompatible-function-pointer-types', '-Werror=int-conversion']
+    LIBS = ['-lSDL3', '-lGL', '-lcrypto', '-ldl', '-lpthread', '-lm']   # GL: the OpenGL back end is linked but Linux renders with Vulkan
 if MINGW:
     HOST_FLAGS += ['-D_WIN32_WINNT=0x0A00']               # mingw-w64 defaults to 0x601 (Windows 7); the Windows SDK to 0x0A00
     # warning guard instead of a blanket -w (finding 100): -w hid "unknown attribute 'thread' ignored" (mingw-w64 turns
@@ -65,7 +75,7 @@ if MINGW:
                    '-Werror=incompatible-function-pointer-types']
     LIBS += ['-lopengl32', '-lws2_32', '-ladvapi32', '-luuid']   # #pragma comment(lib) (nvn_gl.c, nnnet.c, nnmisc.c) and MSVC's
                                                           # default uuid.lib (GUID_NULL): not applied in mingw mode
-DLL, EXE = os.path.join(toolchain.OUT, 'game.dll'), os.path.join(toolchain.OUT, 'game_native.exe')
+DLL, EXE = os.path.join(toolchain.OUT, 'game.so' if LINUX else 'game.dll'), os.path.join(toolchain.OUT, 'game_native' if LINUX else 'game_native.exe')
 IMPLIB = lambda dll: dll[:-4] + ('.dll.a' if MINGW else '.lib')     # game.dll's import library
 ICO = os.path.join(BUILD, 'bayonetta2.ico')
 
@@ -84,7 +94,8 @@ def link_dll():
     # a path goes to the linker whole, through -Xlinker: -Wl, cuts its text at every comma, so an install folder such as
     # "F:\Games, Beta Builds\..." became several linker arguments (finding 149)
     code, out = run([CLANG, '-shared', '-O1', '-w', '-mcx16', '-I', RT, os.path.join(RT, 'game_shim.c'), '@' + rsp, '-o', DLL] +
-                    (['-Xlinker', '--out-implib=' + IMPLIB(DLL)] if MINGW else []))
+                    (['-Xlinker', '--out-implib=' + IMPLIB(DLL)] if MINGW else []) +
+                    (toolchain.PIC + ['-fuse-ld=lld', '-D__declspec(x)=', '-Xlinker', '-soname=game.so'] if LINUX else []))
     print('game.dll: exit %d in %.0fs, %d objects' % (code, time.time() - t, len(objs)))
     if code:
         print(out[-4000:])
@@ -125,7 +136,7 @@ def main():
     if failed:
         return 1
     res = []
-    if os.path.exists(ICO):                                  # icon 1 = the game's icon (scripts/make_icon_local.py), loaded by display.c
+    if os.path.exists(ICO) and not LINUX:                                  # icon 1 = the game's icon (scripts/make_icon_local.py), loaded by display.c
         rc, rs = os.path.join(os.path.dirname(EXE), 'bayonetta2_icon.rc'), os.path.join(os.path.dirname(EXE), 'bayonetta2_icon.res')
         with open(rc, 'w') as f:
             f.write('1 ICON "%s"\n' % ICO.replace('\\', '/'))
@@ -133,11 +144,26 @@ def main():
             res = [rs] if MINGW else ['-Xlinker', rs]        # lld in mingw mode takes the .res as an ordinary input
     # fixed base 0x140000000 + PDB for crash symbolising (paths through -Xlinker, as in link_dll: commas, finding 149)
     debug = ['-g', '-Xlinker', '--pdb=' + EXE[:-4] + '.pdb', '-Wl,--disable-dynamicbase'] if MINGW else ['-g', '-Wl,/DEBUG', '-Wl,/DYNAMICBASE:NO']
-    code, out = run([CLANG] + objs + [IMPLIB(DLL), os.path.join(SDL3, 'lib', 'x64', 'SDL3.lib')] + LIBS + res + debug + ['-o', EXE])
+    if LINUX:   # game.so beside the program (rpath $ORIGIN), like game.dll beside the exe
+        code, out = run([CLANG, '-fuse-ld=lld', '-g', '-rdynamic', '-Xlinker', '--no-dependent-libraries'] + objs + [DLL, '-Xlinker', '-rpath=$ORIGIN'] + LIBS + ['-o', EXE])
+    else:
+        code, out = run([CLANG] + objs + [IMPLIB(DLL), os.path.join(SDL3, 'lib', 'x64', 'SDL3.lib')] + LIBS + res + debug + ['-o', EXE])
     print('game_native.exe: link exit %d' % code)
     if code:
         print(out[-6000:])
         return code
+    if LINUX:
+        # the shader compiler shim against the system's glslang (the same 16.6.0 the Windows build pins); its INIT_ONCE comes
+        # from the program (plat_posix.c, exported by -rdynamic). LoadLibraryA("ssbu_glslang.dll") opens it beside the program.
+        so = os.path.join(os.path.dirname(EXE), 'libssbu_glslang.so')
+        code, out = run([CLANG, '-shared', '-fPIC', '-O2', '-w', '-D_GNU_SOURCE', '-D__declspec(x)=', '-I', os.path.join(RT, 'posix'), '-I', RT,
+                         os.path.join(RT, 'vk_glslang_shim.c'), '-lglslang', '-lglslang-default-resource-limits', '-o', so])
+        print('libssbu_glslang.so: exit %d' % code)
+        if code:
+            print(out[-3000:])
+            return code
+        print('%s: %.1f MB (TOOLCHAIN=linux)' % (EXE, os.path.getsize(EXE) / 2 ** 20))
+        return 0
     shutil.copy2(os.path.join(SDL3, 'lib', 'x64', 'SDL3.dll'), os.path.dirname(EXE))
     print('%s: %.1f MB (TOOLCHAIN=%s)' % (EXE, os.path.getsize(EXE) / 2 ** 20, toolchain.NAME))
     toolchain.copy_runtime_licence(os.path.dirname(EXE))

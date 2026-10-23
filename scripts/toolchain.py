@@ -4,6 +4,8 @@ variable, or --toolchain=<name> on the command line of compile_main.py / build_r
   mingw  llvm-mingw 20260922 (clang 23.1.2, UCRT, x86_64-w64-mingw32; folder: LLVM_MINGW or deps/llvm-mingw): clang + lld +
          mingw-w64 import libraries, all redistributable; the programs need only Windows 10/11 (notes/toolchain-mingw.md,
          findings 95-101). Outputs: build/obj, build/game.dll, build/game_native.exe (+ COPYING.MinGW-w64-runtime.txt).
+  linux  the system's clang + lld (folder: LLVM_ROOT or deps/llvm, else clang on PATH), ELF objects built with -fPIC for a
+         game.so (Linux port, in progress). Outputs: build/obj_linux, and build/game.so, build/game_native, build/obj_host/.
   msvc   clang 9.0.0 (folder: LLVM_ROOT or deps/llvm) for the MSVC target: links with MSVC's link.exe, CRT and Windows SDK libraries
          (needs the Visual Studio Build Tools). Outputs beside the default build: build/obj_msvc, build/out_msvc/.
 The default toolchain's outputs live in the standard places, which every run script, the launcher and bench.py use; an
@@ -18,7 +20,7 @@ import sys
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 BUILD = os.path.join(ROOT, 'build')
 DEPS = os.path.join(ROOT, 'deps')
-NAMES = ('mingw', 'msvc')
+NAMES = ('mingw', 'msvc', 'linux')
 DEFAULT = 'mingw'
 
 
@@ -52,7 +54,7 @@ if NAME not in NAMES:
 MINGW = NAME == 'mingw'
 # the default toolchain builds into the standard places; the other one beside them, in folders named after it
 OBJ = os.path.join(BUILD, 'obj' if NAME == DEFAULT else 'obj_' + NAME)        # lifted objects (compile_main.py)
-OUT = BUILD if NAME == DEFAULT else os.path.join(BUILD, 'out_' + NAME)       # game.dll, obj_host/, game_native.exe
+OUT = BUILD if NAME in (DEFAULT, 'linux') else os.path.join(BUILD, 'out_' + NAME)   # game.dll, obj_host/, game_native.exe (Linux: no Windows build beside it)
 
 if MINGW:
     LLVM_MINGW = need('LLVM_MINGW', 'llvm-mingw', 'bin/x86_64-w64-mingw32-clang.exe', 'llvm-mingw (TOOLCHAIN=mingw)')
@@ -64,12 +66,20 @@ if MINGW:
     # what a program statically linked against the MinGW-w64 runtime should carry beside it (the file's own words: "copy
     # COPYING.MinGW-w64-runtime.txt into your package"); llvm-mingw keeps it under each target, not at its top level
     RUNTIME_LICENCE = os.path.join(LLVM_MINGW, 'x86_64-w64-mingw32', 'share', 'mingw32', 'COPYING.MinGW-w64-runtime.txt')
+elif NAME == 'linux':
+    import shutil
+    llvm = locate('LLVM_ROOT', 'llvm', 'bin/clang')
+    CLANG = os.path.join(llvm, 'bin', 'clang') if llvm else shutil.which('clang') or 'clang'
+    BIN = os.path.dirname(CLANG)
+    OPTNONE = 5000                                       # same clang generation as llvm-mingw 20260922
+    RUNTIME_LICENCE = None                               # glibc and libgcc_s are the system's
 else:
     BIN = os.path.join(need('LLVM_ROOT', 'llvm', 'bin/clang.exe', 'LLVM/clang 9.0.0 (TOOLCHAIN=msvc)'), 'bin')
     CLANG = os.path.join(BIN, 'clang.exe')
     OPTNONE = 20000
     RUNTIME_LICENCE = None                               # MSVC's CRT is the system's / the redistributable's
 LLVM_RC = os.path.join(BIN, 'llvm-rc.exe')
+PIC = ['-fPIC'] if NAME == 'linux' else []               # objects of a shared library on ELF
 
 
 def copy_runtime_licence(folder):

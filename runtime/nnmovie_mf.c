@@ -65,6 +65,7 @@
  * Environment: SSBU_MOVIE=0 keeps the failing placeholder (nnmovie.c); SSBU_MOVIE_SAVE=<file> saves what the game's
  * reader returned; SSBU_MOVIE_LOG=1 logs every decoder call; SSBU_MOVIE_TEST_RESYNC=<flag>,<n> makes the game
  * re-synchronise (pause, seek, resume) the movie at the n-th video sample, see dec_SendInputBufferForDecode. */
+#ifdef _WIN32
 #define COBJMACROS
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -1371,3 +1372,8 @@ void register_movie_mf_imports(void) {
     InitializeCriticalSection(&g_init_lock);
     register_imports(movie_mf_imports, (int)(sizeof movie_mf_imports / sizeof movie_mf_imports[0]));
 }
+#else
+/* Linux: no Media Foundation; the failing placeholder of nnmovie.c stays, as with SSBU_MOVIE=0 (an FFmpeg decoder is milestone 4) */
+#include <stdio.h>
+void register_movie_mf_imports(void) { printf("movie: no decoder on Linux yet, keeping the failing placeholder\n"); }
+#endif

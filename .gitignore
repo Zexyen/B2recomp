@@ -40,6 +40,9 @@
 !/runtime/*.inc
 !/runtime/build_glslang.bat
 !/runtime/gen/make_gen.py
+!/runtime/posix/*.h
+!/runtime/posix/GL/gl.h
+# runtime/posix/: the Linux build's Win32 headers (plat.h subset, win32_absent.h, winsock2.h), hand-written
 # runtime/gen/* other than make_gen.py is generated from the user's dump (sdk.elf, sdklift_gen.c, sdkdata.c,
 # image_layout.h, imports_all.txt, sdklift_report.txt, ...): stays ignored by rule 1.
 
@@ -139,3 +142,6 @@
 # ---- 10. exceptions to rule 9 (a later rule wins): checked files only
 # numbers of the standard test run (fps, CPU ms, margins, run names); no game strings, no images
 !/tests/bench_baseline.json
+
+# ---- Linux port: the platform layer's self-test (hand-written)
+!/tests/plat_selftest.c

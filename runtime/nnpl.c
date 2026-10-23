@@ -88,6 +88,7 @@ static void load_font(unsigned type) {
             if (data) printf("nn::pl: shared font %u loaded (%s, decoded: %zu bytes)\n", type, path, size);
         }
         if (!data) {                                      /* a console always has its fonts: a real font stands in, never "size 0" */
+#ifdef _WIN32
             char fonts[MAX_PATH];
             UINT n = GetWindowsDirectoryA(fonts, MAX_PATH);
             for (int i = 0; n && n < MAX_PATH - 32 && !data && k_standin[type][i]; i++) {
@@ -96,6 +97,18 @@ static void load_font(unsigned type) {
                     if (t != type && g_fonts[t].data && !_stricmp(g_fonts[t].path, path)) data = g_fonts[t].data, size = g_fonts[t].size;
                 if (!data) data = read_file(path, &size);
             }
+#else
+            /* Linux: fontconfig's sans-serif for the type's language (the same languages as the Windows list) */
+            static const char *const k_lang[FONT_TYPES] = {"ja", "zh-cn", "zh-cn", "zh-tw", "ko", "en", "en"};
+            char cmd[96];
+            snprintf(cmd, sizeof cmd, "fc-match -f '%%{file}' 'sans-serif:lang=%s' 2>/dev/null", k_lang[type]);
+            FILE *fc = popen(cmd, "r");
+            path[0] = 0;
+            if (fc) { if (!fgets(path, MAX_PATH, fc)) path[0] = 0; pclose(fc); }
+            for (unsigned t = 0; path[0] && t < FONT_TYPES && !data; t++)
+                if (t != type && g_fonts[t].data && !strcmp(g_fonts[t].path, path)) data = g_fonts[t].data, size = g_fonts[t].size;
+            if (path[0] && !data) data = read_file(path, &size);
+#endif
             if (data)
                 printf("nn::pl: shared font %u (%s.ttf or .bfttf) NOT FOUND in %s: STAND-IN %s (%zu bytes), a font of this PC: "
                        "the game's system text looks different from the console's\n", type, font_files[type], dir, path, size);

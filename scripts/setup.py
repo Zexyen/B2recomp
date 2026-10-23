@@ -2,7 +2,7 @@
 """From a fresh clone and YOUR OWN dump to a runnable build, on your PC.
 
     python scripts/setup.py --dump <folder> [--jobs N] [--only <step> | --from <step>] [--status]
-                            [--toolchain mingw|msvc] [--llvm-mingw <dir>] [--llvm <dir>] [--sdl3 <dir>]
+                            [--toolchain mingw|msvc|linux] [--llvm-mingw <dir>] [--llvm <dir>] [--sdl3 <dir>]
                             [--vulkan-headers <dir>] [--glslang <dir> | --glslang-dll <file>] [--accept-modified]
                             [--mods <folder>]
 
@@ -142,11 +142,14 @@ def link_folder(link, target):
         if is_junction(link) or os.path.islink(link):
             if os.path.normcase(os.path.realpath(link)) == os.path.normcase(os.path.realpath(target)):
                 return 'kept'
-            os.rmdir(link)                                   # removes the junction only, never what it points to
+            (os.unlink if os.path.islink(link) else os.rmdir)(link)   # removes the link only, never what it points to
         else:
             return 'a real folder, kept (not replaced by the dump\'s)'
     os.makedirs(os.path.dirname(link), exist_ok=True)
     # quoted here: cmd splits an unquoted path at commas too, and Python quotes only paths with spaces (finding 149)
+    if os.name != 'nt':
+        os.symlink(target, link, target_is_directory=True)
+        return 'symlink to ' + target
     r = subprocess.run('cmd /c mklink /J "%s" "%s"' % (link, target), capture_output=True, text=True)
     if r.returncode:
         raise Fail('could not make the junction %s -> %s: %s' % (link, target, (r.stdout + r.stderr).strip()))
@@ -214,10 +217,14 @@ def step_deps(cx):
 
     saved = cx.state.get('tools', {})                    # what an earlier run found (its options need not be given again)
     name = a.toolchain or os.environ.get('TOOLCHAIN') or saved.get('TOOLCHAIN') or 'mingw'
-    if name not in ('mingw', 'msvc'):
-        raise Fail('--toolchain must be mingw or msvc, not %r' % name)
+    if name not in ('mingw', 'msvc', 'linux'):
+        raise Fail('--toolchain must be mingw, msvc or linux, not %r' % name)
     cx.tools['TOOLCHAIN'] = name
-    if name == 'mingw':
+    if name == 'linux':
+        clang = shutil.which('clang')
+        if not clang:
+            raise Fail('clang not found on PATH (install clang and lld from your distribution)')
+    elif name == 'mingw':
         root = find_first([a.llvm_mingw, os.environ.get('LLVM_MINGW'), os.path.join(DEPS, 'llvm-mingw'), saved.get('LLVM_MINGW')],
                           os.path.join('bin', 'x86_64-w64-mingw32-clang.exe'))
         if not root:
@@ -235,15 +242,18 @@ def step_deps(cx):
     say('  compiler (%s): %s   [%s]' % (name, ver, clang))
     probe = os.path.join(cx.build, 'probe')
     os.makedirs(probe, exist_ok=True)
+    linux = name == 'linux'
     with open(os.path.join(probe, 'p.c'), 'w') as f:
-        f.write('#include <windows.h>\n#include <stdio.h>\nint main(void){puts("ok");return 0;}\n')
-    exe = os.path.join(probe, 'p.exe')
-    r = subprocess.run([clang, os.path.join(probe, 'p.c'), '-o', exe, '-luser32'], capture_output=True, text=True)
+        f.write(('' if linux else '#include <windows.h>\n') + '#include <stdio.h>\nint main(void){puts("ok");return 0;}\n')
+    exe = os.path.join(probe, 'p' if linux else 'p.exe')
+    r = subprocess.run([clang, os.path.join(probe, 'p.c'), '-o', exe] + ([] if linux else ['-luser32']), capture_output=True, text=True)
     if r.returncode or subprocess.run([exe], capture_output=True, text=True).stdout.strip() != 'ok':
         hint = 'the llvm-mingw folder is incomplete' if name == 'mingw' else \
                'install the MSVC Build Tools (C++ x64 tools) and a Windows 10/11 SDK'
         raise Fail('the compiler cannot build and run a Windows program: %s\n%s' % (hint, (r.stdout + r.stderr)[-800:]))
-    say('  compiler builds and runs a Windows program: ok')
+    say('  compiler builds and runs a %s program: ok' % ('Linux' if linux else 'Windows'))
+    if linux:
+        return                                           # SDL3, Vulkan and glslang: the system's, found by build_runtime.py
 
     for env, opt, sub, probe_rel, what in (
             ('SDL3_ROOT', a.sdl3, 'SDL3', os.path.join('lib', 'x64', 'SDL3.lib'), 'SDL3 3.4.18 (VC development package)'),
@@ -464,6 +474,14 @@ def step_icon(cx):
 
 
 def step_link(cx):
+    if cx.tools.get('TOOLCHAIN') == 'linux':                 # no launcher yet: build/game_native and build/game.so
+        cx.run('link', [sys.executable, os.path.join(REPO, 'scripts', 'build_runtime.py')])
+        for f in ('game.so', 'game_native'):
+            if not os.path.isfile(os.path.join(cx.build, f)):
+                raise Fail('build/%s is missing after the link step (see %s)' % (f, os.path.join(cx.logs, 'link.log')))
+        say('  build/game_native %.1f MB, game.so %.0f MB (no launcher on Linux yet)'
+            % (os.path.getsize(os.path.join(cx.build, 'game_native')) / 2 ** 20, os.path.getsize(os.path.join(cx.build, 'game.so')) / 2 ** 20))
+        return
     cx.run('link', [sys.executable, os.path.join(REPO, 'scripts', 'build_runtime.py')])
     cx.run('link', [sys.executable, os.path.join(REPO, 'scripts', 'build_launcher.py')])
     for f in ('game.dll', 'game_native.exe', 'SDL3.dll', 'ssbu_glslang.dll', 'launcher.exe'):
@@ -523,7 +541,7 @@ def main():
     ap.add_argument('--status', action='store_true')
     ap.add_argument('--accept-modified', action='store_true')
     ap.add_argument('--mods', help='folder of emulator-style code mods (.pchtxt / .ips); default <repo>\\mods (remembered)')
-    ap.add_argument('--toolchain', choices=('mingw', 'msvc'))
+    ap.add_argument('--toolchain', choices=('mingw', 'msvc', 'linux'))
     ap.add_argument('--llvm-mingw', help='llvm-mingw folder (bin\\x86_64-w64-mingw32-clang.exe)')
     ap.add_argument('--llvm', help='LLVM 9.0.0 folder (bin\\clang.exe), --toolchain msvc only')
     ap.add_argument('--sdl3', help='SDL3 development package (VC) folder: include\\, lib\\x64\\')

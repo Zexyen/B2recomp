@@ -46,7 +46,7 @@ CLANG = toolchain.CLANG
 # clang 9 runs only the always-inliner at -O1: without this every rd64 / wr64 / cond / adds32 of runtime.h, neon.h and
 # rt_ext.h stays a call there (finding 91). Harmless at -O2, which inlines them anyway.
 FORCE_INLINE = '-Dinline=inline __attribute__((always_inline))'
-FLAGS = ['-ffp-contract=off', '-w', '-fno-strict-aliasing', '-mcx16', FORCE_INLINE, '-I', INC, '-I', GEN]
+FLAGS = ['-ffp-contract=off', '-w', '-fno-strict-aliasing', '-mcx16'] + toolchain.PIC + [FORCE_INLINE, '-I', INC, '-I', GEN]
 OPT = '-O2'
 OPTNONE = toolchain.OPTNONE
 TIME_LIMIT = 900                                         # -O2: the largest file takes ~300 s with 16 jobs
@@ -189,10 +189,10 @@ def link():
     rsp = os.path.join(OBJ, '_objs.rsp')
     with open(rsp, 'w') as f:
         f.writelines('"%s"\n' % o.replace('\\', '/') for o in objs)
-    dll = os.path.join(ROOT, 'build', 'main_test.dll' if toolchain.NAME == toolchain.DEFAULT else 'main_test_%s.dll' % toolchain.NAME)
+    dll = os.path.join(ROOT, 'build', 'main_test.dll' if toolchain.NAME == toolchain.DEFAULT else 'main_test_%s.%s' % (toolchain.NAME, 'so' if toolchain.NAME == 'linux' else 'dll'))
     stubs = os.path.join(ROOT, 'scripts', 'rt_stubs.c')
     t = time.time()
-    r = subprocess.run([CLANG, '-shared', '-O1', '-w', '-mcx16', '-I', INC, '-I', GEN, stubs, '@' + rsp, '-o', dll],
+    r = subprocess.run([CLANG, '-shared', '-O1', '-w', '-mcx16'] + toolchain.PIC + ['-fuse-ld=lld'] * (toolchain.NAME == 'linux') + ['-I', INC, '-I', GEN, stubs, '@' + rsp, '-o', dll],
                        capture_output=True, text=True)
     print('link: exit %d in %.0fs' % (r.returncode, time.time() - t))
     print((r.stdout + r.stderr)[-6000:])
