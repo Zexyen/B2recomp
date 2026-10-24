@@ -3113,7 +3113,7 @@ static const uint8_t *dt_map(VkBuffer b) { if (b == R.ring) return R.ring_mem.ma
  * width, and a piece the game sized to the whole screen in screen pixels (pause blur, screen copies) gets the plain
  * screen projection. Either is a copy of block 12 with another first row, bound for that draw only (uw2d_end puts the
  * game's back). A projection rather than a viewport: the viewport also moves the clip window. */
-static float g_uw_proj[2][64];                    /* 0 the screen, 1 the layout stretched; host memory: buf_ref streams it */
+static float g_uw_proj[3][64];                    /* 0 the screen, 1 the layout stretched, 2 a right-edge panel reaching the screen's edge; host memory: buf_ref streams it */
 static Range g_uw_keep;
 static int g_uw_sc, g_uw_sc_had, g_uw_sc_keep[4];
 static int uw_log_on(void) { static int on = -1; if (on < 0) on = getenv("SSBU_UW_LOG") && atoi(getenv("SSBU_UW_LOG")); return on; }   /* developer aid: hunting 21:9 pieces */
@@ -3232,6 +3232,7 @@ static void uw2d_begin(const Cmd *m, int indexed) {
     if (!onscreen) k = 1;                          /* an off-screen picture (shop preview, 256 x 256): the layout projection the Switch used, no clip */
     else if (x1 - x0 > 1150.0f && x1 - x0 < 1400.0f && fabsf(x0 + x1 - 1280.0f) < 40.0f) k = 1;      /* centred within 20: zooming copies (Panther Within) */      /* up to 1400: blur copies drawn with a margin (-16..1296) */
     else if (x0 < 1.0f && x1 > W - 1.0f && y0 < 1.0f && y1 > 719.0f) k = 0;
+    else if (fabsf(w[3] - 1280.0f) < 0.5f && x1 > 1279.0f && x1 < 1281.0f && x0 > 320.0f) k = 2;   /* a panel the game hangs from the screen's right edge (results screen): its right end goes to the real edge, the text inside stays */
     else if (x0 > 1279.5f && x1 <= W + 0.5f && x1 > W - 180.0f) k = 0;   /* right of the layout, hugging the screen's edge: placed from it (halo counter); parked panels stay hidden */                  /* wholly right of the layout: placed from the screen's right edge (shop info panel, results column) */
     else {                                         /* centred: clipped to the 16:9 area, as on the Switch (menus park panels just outside it) */
         int l = (int)((W - 1280.0f) * 0.5f), sx = R.have_scissor ? R.scissor[0] : 0, sw = R.have_scissor ? R.scissor[2] : (int)W;
@@ -3256,6 +3257,10 @@ static void uw2d_begin(const Cmd *m, int indexed) {
     float *p = g_uw_proj[k];
     memcpy(p, o, (size_t)u[12].size);              /* the same bytes each time (W fixed): ring_put's range cache stays right */
     p[0] = 2.0f / (k ? 1280.0f : W); p[1] = p[2] = 0; p[3] = -1.0f;
+    if (k == 2) {                                  /* layout x0 .. 1280 -> screen off + x0 .. W */
+        float off = (W - 1280.0f) * 0.5f, a = (1280.0f + off - x0) / (1280.0f - x0);
+        p[0] = 2.0f * a / W; p[3] = -1.0f + 2.0f * (off + x0 - a * x0) / W;
+    }
     g_uw_keep = R.ubo[0][12]; g_uw_on = 1 + 12;
     R.ubo[0][12].addr = (uint64_t)(uintptr_t)p;
 }

@@ -8,6 +8,8 @@ global the 232 callers of 0x7100dc4f2c read); the 2D projection 0x710097980c is 
 runtime/gfx_options.c from the monitor's shape when aspect = wide; unset or <= 1280 = the game as made):
   - 0x7100dc1e40: the screen width is RECOMPS_UW_WIDTH (3D renders Hor+ at that width: the camera keeps its height);
   - 0x710097b9fc, 0x710097ba0c, 0x710097cba0, 0x710097d29c, 0x7100ed19d8: those buffers follow it (no post-effect ghosting);
+  - the half and quarter buffers of depth of field and the other post effects (13 sites, 640 / 320 wide by constant)
+    are half / a quarter of it (cutscene depth of field drew in the middle 16:9 area);
   - 0x710097985c: the 2D projection is shifted so the 1280 layout sits in the middle (ortho(-off, width - off)).
 The renderer then fixes up full-screen pieces per draw (runtime/nvn_vk_draw.c uw2d_begin / uw_fx_begin). Running this
 again rewrites the same lines (it keys on the labels), so it is safe on an already patched tree.
@@ -23,12 +25,20 @@ static unsigned uw_width(void) { static int w = -1; if (w < 0) { const char *e =
 WIDTH = '7100dc1e40'
 BUFFERS = ['710097b9fc', '710097ba0c', '710097cba0', '710097d29c', '7100ed19d8']
 CENTRE = '710097985c'
+# the half (640 x 360) and quarter (320 x 180) buffers of depth of field and the other post effects: 16:9 by constant
+HALF = ['710097cbe8', '710097d2d0', '710097d2fc', '710097d328']
+QUARTER = ['710097d354', '710097d380', '710097d3a8', '710097d3d0', '710097d3f8', '710097d420', '710097d448', '710097d498', '710097d4c0']
 
 
 def line_for(label, old):
     if label == WIDTH:
         return ('L_%s: {  uint64_t a = c->x[20] + 0ULL; c->x[8] = (uint64_t)(rd32(a));  } if (uw_width()) c->x[8] = uw_width();   %s'
                 % (label, MARK))
+    if label in HALF or label in QUARTER:
+        reg = re.match(r'L_%s: c->x\[(\d+)\] = ' % label, old)
+        assert reg, 'unexpected line at %s: %s' % (label, old)
+        d, base = (2, '0x280U') if label in HALF else (4, '0x140U')
+        return 'L_%s: c->x[%s] = (uint32_t)(uw_width() ? uw_width() / %d : %s);   %s' % (label, reg.group(1), d, base, MARK)
     if label in BUFFERS:
         reg = re.match(r'L_%s: c->x\[(\d+)\] = ' % label, old)
         assert reg, 'unexpected line at %s: %s' % (label, old)
@@ -39,7 +49,7 @@ def line_for(label, old):
 
 def main():
     gen = next((a.split('=', 1)[1] for a in sys.argv[1:] if a.startswith('--gen=')), os.path.join(ROOT, 'build', 'gen_eh'))
-    labels = [WIDTH] + BUFFERS + [CENTRE]
+    labels = [WIDTH] + BUFFERS + HALF + QUARTER + [CENTRE]
     found = {}
     for name in sorted(os.listdir(gen)):
         if not (name.startswith('c_') and name.endswith('.c')):
