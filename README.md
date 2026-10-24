@@ -25,11 +25,11 @@ Measured on the developer's PC (Windows 11, 16 threads, a Vulkan 1.3 GPU):
 | Prologue (cutscenes, chapter card, first fights) | played through: 900 s, no crash, every system call the game makes handled |
 | Chapter 1 with a controller (DualSense, Xbox, Switch Pro and other SDL3 pads) | played by hand past the first part |
 | Standard test run (`scripts/bench.py`: tutorial and the first fight, scripted) | 59.5 fps at 60 and 119 fps at 120 (the display rate), 0 faults |
-| Frame rate 120 (beta) | the test fight at 119 fps on a 238 Hz monitor, each frame shown for two refreshes; combos, hit-stop, Witch Time and slow motions keep their 60 fps timing |
+| Frame rate 120 (beta) | the test fight at 119 fps on a 238 Hz monitor, each frame shown for two refreshes; combos, hit-stop, Witch Time, slow motions and stick-motion moves (back-forward, double tap) keep their 60 fps timing |
 | HDR (Windows HDR on) | the picture goes out as HDR10, as bright as Windows' *SDR content brightness*, at no measurable cost (tested on an NVIDIA card) |
 | PlayStation / Xbox button pictures (with the prompt mod) | with Face buttons by printed letter they follow the printed letters, the action prompts in play included (tested with a DualSense) |
 | Later chapters | being played and tested |
-| Other PCs and GPUs | run by players on AMD Radeon cards (RX 560 to RX 9070 XT) and on Windows 10; fixes for their reports are in v0.2.1 to v0.2.6 |
+| Other PCs and GPUs | run by players on AMD Radeon cards (RX 560 to RX 9070 XT), on Windows 10 and on handheld PCs; fixes for their reports are in v0.2.1 to v0.2.6 and v0.3.4 |
 
 Expect bugs. Builds are compared with a scripted test run (`python scripts/bench.py`, see [BUILDING.md](BUILDING.md)).
 
@@ -179,10 +179,14 @@ the game. They are ignored by git: never commit, upload or share them.
 - The lifter (`lifter/`) and the runtime (`runtime/`) started as copies of
   [ssbu-recomp](https://github.com/Denkishi/ssbu-recomp) by Denkishi (commit `3a96916`), licensed GPL-3.0-or-later;
   every change is marked `[Recomps#1]` and listed in `runtime/UPSTREAM.md` and `lifter/README.md`.
+- Contributions, with thanks: **Zexyen**, write watch on Linux: the kernel tracks which pages the game wrote, so the
+  textures are no longer checksummed every frame (`runtime/linux/win32_compat.c`, userfaultfd + PAGEMAP_SCAN;
+  [#48](https://github.com/K0NL/B2recomp/pull/48)).
 - Other open-source components and references: see [NOTICE.md](NOTICE.md).
-- Copyright (C) 2026 K0NL, and the ssbu-recomp authors for the parts taken from it. This project as a whole is licensed
-  under the **GNU General Public License, version 3 or (at your option) any later version**; see [LICENSE](LICENSE).
-  The need for your own game dump is a technical requirement, not a licence term.
+- Copyright (C) 2026 K0NL, the contributors named above for their contributions, and the ssbu-recomp authors for the
+  parts taken from it. This project as a whole is licensed under the **GNU General Public License, version 3 or (at your
+  option) any later version**; see [LICENSE](LICENSE). The need for your own game dump is a technical requirement, not a
+  licence term.
 
 ## Legal
 
