@@ -3167,21 +3167,23 @@ static int uw_fx_begin(const Cmd *m, int indexed) {
         snprintf(kk, sizeof kk, "vs#%d fs#%d v0 %.2f,%.2f M %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | w %.2f %.2f %.2f %.2f col %.2f %.2f %.2f vp %g,%g", R.prog[0]->serial, R.prog[1] ? R.prog[1]->serial : -1, v[0], v[1], q[16], q[17], q[18], q[19], q[20], q[21], q[22], q[23], q[28], q[29], q[30], q[31], q[0], q[1], q[2], R.viewport[0], R.viewport[2]);
         int f = 0; for (int i = 0; i < ns; i++) if (!strcmp(seen[i], kk)) { f = 1; break; }
         if (!f && ns < 4096 && q[28] == 0 && q[29] == 0 && q[31] == 1.0f) { strcpy(seen[ns++], kk); printf("UWFX f%lld %s\n", nvn_front_frame_next(), kk); } }
-    /* the 16:9 layout's shape on this screen, at any zoom and offset (Panther Within zooms it 1.3): x scale / y scale = 1280 / W */
+    /* a screen-space overlay (no rotation, w = 1) that reaches the full height and spans about the 16:9 area's width around
+     * the centre: the game sized it for 16:9 (underwater tint, also mirrored; fades; Panther Within's ghost; glows) */
     float W = (float)g_rs_bw;
-    if (q[16] <= 0 || q[21] <= 0 || W < 1281.0f || q[17] != 0 || q[20] != 0 || q[28] != 0 || q[29] != 0 || q[30] != 0 || q[31] != 1.0f) return 0;
-    if (fabsf(1280.0f * q[21] / q[16] - W) > 2.0f) {
-        /* or square pixels (x scale / y scale = 720 / W) on a 16:9 rectangle reaching the full height: a copy of the screen
-         * the game shapes as 16:9 (Panther Within's ghost, local 12.8 x 7.2) */
-        uint64_t lo, hi;
-        if (fabsf(720.0f * q[21] / q[16] - W) > 2.0f || !uw_vrange(m, indexed, &lo, &hi) || hi - lo > 64 || !R.vbuf[0].addr || hi * R.vstream[0].stride > R.vbuf[0].size) return 0;
-        float x0 = 1e30f, x1 = -1e30f, y0 = 1e30f, y1 = -1e30f;
-        for (uint64_t i = lo; i < hi; i++) { const float *v = (const float *)((const uint8_t *)P(R.vbuf[0].addr) + i * R.vstream[0].stride); if (v[0] < x0) x0 = v[0]; if (v[0] > x1) x1 = v[0]; if (v[1] < y0) y0 = v[1]; if (v[1] > y1) y1 = v[1]; }
-        if (uw_log_on()) { static int n; if (n++ < 20) printf("UWFX169 f%lld vs#%d fs#%d local %g..%g x %g..%g scale %g %g\n", nvn_front_frame_next(), R.prog[0]->serial, R.prog[1] ? R.prog[1]->serial : -1, x0, x1, y0, y1, q[16], q[21]); }
-        if (y1 <= y0 || fabsf((x1 - x0) / (y1 - y0) - 16.0f / 9.0f) > 0.02f || q[21] * (y1 - y0) < 1.9f) return 0;
+    if (q[16] == 0 || q[21] == 0 || W < 1281.0f || fabsf(q[17]) > 1e-4f || fabsf(q[20]) > 1e-4f || q[28] != 0 || q[29] != 0 || q[30] != 0 || q[31] != 1.0f) return 0;
+    if (R.vstream[0].stride != 32 || (R.vattr[0] & 0xff) != 0x2e || (R.vattr[5] & 0xff) != 0x2e || !R.vbuf[0].addr) return 0;
+    uint64_t lo, hi;
+    if (!uw_vrange(m, indexed, &lo, &hi) || hi - lo > 64 || hi * 32 > R.vbuf[0].size) return 0;
+    float x0 = 1e30f, x1 = -1e30f, y0 = 1e30f, y1 = -1e30f;
+    for (uint64_t i = lo; i < hi; i++) {
+        const float *v = (const float *)((const uint8_t *)P(R.vbuf[0].addr) + i * 32);
+        float x = q[16] * v[0] + q[19], y = q[21] * v[1] + q[23];
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
     }
+    float span = (x1 - x0) * W / 2560.0f;           /* the width in 16:9 areas: 1 = the game's 1280 */
+    if (uw_log_on() && y0 <= -0.98f && y1 >= 0.98f) { static int n; if (n++ < 40) printf("UWFXQ f%lld vs#%d fs#%d x %.3f..%.3f y %.3f..%.3f span %.3f\n", nvn_front_frame_next(), R.prog[0]->serial, R.prog[1] ? R.prog[1]->serial : -1, x0, x1, y0, y1, span); }
+    if (y0 > -0.98f || y1 < 0.98f || fabsf(x0 + x1) > 0.06f || span < 0.85f || span > 1.15f) return 0;
     if (R.prog[0]->serial != g_uw_fx_vs && g_uw_fx_vs) return 0;
-    if (R.vstream[0].stride != 32 || (R.vattr[0] & 0xff) != 0x2e || (R.vattr[5] & 0xff) != 0x2e) return 0;
     if (q[0] == 1.0f && q[1] == 1.0f && q[2] == 1.0f && fabsf(q[21] - 2.0f) < 1e-4f && fabsf(q[19] * W - 1280.0f) < 1.0f) { g_uw_bars = W; return 0; }      /* the colour untouched, unzoomed: a movie; it stays 16:9 between black bars */
     uint8_t *p = g_uw_fx[g_uw_fxn++ & 4095];
     memcpy(p, q, (size_t)u->size);
