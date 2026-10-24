@@ -3113,7 +3113,7 @@ static const uint8_t *dt_map(VkBuffer b) { if (b == R.ring) return R.ring_mem.ma
  * width, and a piece the game sized to the whole screen in screen pixels (pause blur, screen copies) gets the plain
  * screen projection. Either is a copy of block 12 with another first row, bound for that draw only (uw2d_end puts the
  * game's back). A projection rather than a viewport: the viewport also moves the clip window. */
-static float g_uw_proj[3][64];                    /* 0 the screen, 1 the layout stretched, 2 a right-edge panel reaching the screen's edge; host memory: buf_ref streams it */
+static float g_uw_proj[5][64];                    /* 0 the screen, 1 the layout stretched, 2 a right-edge panel reaching the screen's edge, 3 hung from the right edge; host memory: buf_ref streams it */
 static Range g_uw_keep;
 static int g_uw_sc, g_uw_sc_had, g_uw_sc_keep[4];
 static int uw_log_on(void) { static int on = -1; if (on < 0) on = getenv("SSBU_UW_LOG") && atoi(getenv("SSBU_UW_LOG")); return on; }   /* developer aid: hunting 21:9 pieces */
@@ -3182,7 +3182,7 @@ static int uw_fx_begin(const Cmd *m, int indexed) {
     }
     float span = (x1 - x0) * W / 2560.0f;           /* the width in 16:9 areas: 1 = the game's 1280 */
     if (uw_log_on() && y0 <= -0.98f && y1 >= 0.98f) { static int n; if (n++ < 40) printf("UWFXQ f%lld vs#%d fs#%d x %.3f..%.3f y %.3f..%.3f span %.3f\n", nvn_front_frame_next(), R.prog[0]->serial, R.prog[1] ? R.prog[1]->serial : -1, x0, x1, y0, y1, span); }
-    if (y0 > -0.98f || y1 < 0.98f || fabsf(x0 + x1) > 0.06f || span < 0.85f || span > 1.15f) return 0;
+    if (y0 > -0.98f || y1 < 0.98f || fabsf(x0 + x1) > 0.06f || span < 0.85f || span > 1.3f) return 0;     /* up to 1.3: the underwater tint is drawn 1.2 wide */
     if (R.prog[0]->serial != g_uw_fx_vs && g_uw_fx_vs) return 0;
     if (q[0] == 1.0f && q[1] == 1.0f && q[2] == 1.0f && fabsf(q[21] - 2.0f) < 1e-4f && fabsf(q[19] * W - 1280.0f) < 1.0f) { g_uw_bars = W; return 0; }      /* the colour untouched, unzoomed: a movie; it stays 16:9 between black bars */
     uint8_t *p = g_uw_fx[g_uw_fxn++ & 4095];
@@ -3233,11 +3233,21 @@ static void uw2d_begin(const Cmd *m, int indexed) {
     else if (x1 - x0 > 1150.0f && x1 - x0 < 1400.0f && fabsf(x0 + x1 - 1280.0f) < 40.0f) k = 1;      /* centred within 20: zooming copies (Panther Within) */      /* up to 1400: blur copies drawn with a margin (-16..1296) */
     else if (x0 < 1.0f && x1 > W - 1.0f && y0 < 1.0f && y1 > 719.0f) k = 0;
     else if (fabsf(w[3] - 1280.0f) < 0.5f && x1 > 1279.0f && x1 < 1281.0f && x0 > 320.0f) k = 2;   /* a panel the game hangs from the screen's right edge (results screen): its right end goes to the real edge, the text inside stays */
-    else if (x0 > 1279.5f && x1 <= W + 0.5f && x1 > W - 180.0f) k = 0;   /* right of the layout, hugging the screen's edge: placed from it (halo counter); parked panels stay hidden */                  /* wholly right of the layout: placed from the screen's right edge (shop info panel, results column) */
+    else if (w[3] > 1280.5f && w[3] < 1280.0f + (W - 1280.0f) * 0.25f) k = 3;   /* anchored just right of the layout's edge (the results screen's light rays): moves with the screen's right edge, not clipped */
     else {                                         /* centred: clipped to the 16:9 area, as on the Switch (menus park panels just outside it) */
+        /* placed from the screen's width (x = W - d: the halo counter, the chapter results' score page, panels parked to
+         * slide in): the game meant 1280 - d, so it moves left by the extra width and is clipped like the rest */
+        int wbased = w[3] > 1280.0f + (W - 1280.0f) * 0.25f && w[3] <= W + 0.5f;      /* not a panel parked past the screen (the shop popup at 2580) */
         int l = (int)((W - 1280.0f) * 0.5f), sx = R.have_scissor ? R.scissor[0] : 0, sw = R.have_scissor ? R.scissor[2] : (int)W;
         if (R.have_scissor && !(sx <= 0 && sx + sw >= (int)W)) sx += l;      /* the game's own scissor (scrolling lists) is in uncentred layout pixels */
-        else if (x0 >= 0 && x1 <= 1280.0f) return;
+        else if (x0 >= 0 && x1 <= 1280.0f && !wbased) return;
+        if (wbased) {
+            float *p = g_uw_proj[3 + 1];
+            memcpy(p, o, (size_t)u[12].size);
+            p[0] = 2.0f / W; p[1] = p[2] = 0; p[3] = -1.0f - (W - 1280.0f) / W;      /* layout x -> screen x - off */
+            g_uw_keep = R.ubo[0][12]; g_uw_on = 1 + 12;
+            R.ubo[0][12].addr = (uint64_t)(uintptr_t)p;
+        }
         int a0 = sx > l ? sx : l, a1 = sx + sw < l + 1280 ? sx + sw : l + 1280;
         memcpy(g_uw_sc_keep, R.scissor, sizeof g_uw_sc_keep); g_uw_sc_had = R.have_scissor; g_uw_sc = 1;
         if (!R.have_scissor) { R.scissor[1] = 0; R.scissor[3] = 720; }
@@ -3256,7 +3266,8 @@ static void uw2d_begin(const Cmd *m, int indexed) {
     }
     float *p = g_uw_proj[k];
     memcpy(p, o, (size_t)u[12].size);              /* the same bytes each time (W fixed): ring_put's range cache stays right */
-    p[0] = 2.0f / (k ? 1280.0f : W); p[1] = p[2] = 0; p[3] = -1.0f;
+    p[0] = 2.0f / (k == 1 ? 1280.0f : W); p[1] = p[2] = 0; p[3] = -1.0f;
+    if (k == 3) p[3] = -1.0f + 2.0f * (W - 1280.0f) / W;      /* layout x -> screen x + 2 off */
     if (k == 2) {                                  /* layout x0 .. 1280 -> screen off + x0 .. W */
         float off = (W - 1280.0f) * 0.5f, a = (1280.0f + off - x0) / (1280.0f - x0);
         p[0] = 2.0f * a / W; p[3] = -1.0f + 2.0f * (off + x0 - a * x0) / W;
